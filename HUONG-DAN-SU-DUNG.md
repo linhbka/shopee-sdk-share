@@ -433,7 +433,30 @@ APP IP Address Management → thêm IP → Submit.
   hộp thư như vậy). Mã 5 phải bật tay trong Console → Push Mechanism.
 - Quy tắc chung: **lưu payload thô của mọi webhook** vào một bảng log, viết bộ xử lý dựa trên
   payload thật đã lưu, và khi kiểm một đường push thì nhìn cả hai đầu (bảng log và bảng đích).
-- Xác thực chữ ký bằng `client.push.verify_push(...)` với **khoá push**, không phải partner key.
+- **Xác thực chữ ký tự viết** — SDK không có hàm cho việc này (module `push` chỉ có
+  `get_app_push_config`, `set_app_push_config`, `get_lost_push_message`,
+  `confirm_consumed_lost_push_message`). Dùng **khoá push** (Console → Push Mechanism), không
+  phải partner key:
+
+  ```python
+  import hashlib, hmac
+
+  def chu_ky_hop_le(url: str, raw_body: bytes, header_authorization: str, push_key: str) -> bool:
+      base = url.encode("utf-8") + b"|" + raw_body
+      mong_doi = hmac.new(push_key.encode("utf-8"), base, hashlib.sha256).hexdigest()
+      return hmac.compare_digest(mong_doi, (header_authorization or "").strip().lower())
+  ```
+
+  `url` phải đúng **URL công khai đã khai trên Console** (có `https://`). Chạy sau proxy /
+  tunnel thì ứng dụng thấy `http://` và host nội bộ → dựng lại từ `X-Forwarded-Proto` và
+  `X-Forwarded-Host`, nếu không mọi chữ ký đều sai. `raw_body` là byte gốc, không parse rồi
+  dump lại.
+- **Luôn trả 2xx với body RỖNG, trong 3 giây.** Body không rỗng hoặc mã khác 2xx bị tính là
+  thất bại; Shopee gửi lại sau 5 phút, 30 phút, 3 giờ. Tỷ lệ thành công dưới 70% thì bị email
+  cảnh báo, dưới 30% thì Shopee **tắt đăng ký push**. Vì vậy chữ ký sai hay mã lạ cũng trả 200
+  (rồi log lại); ghi payload vào DB trước, xử lý nặng để worker làm sau.
+- Push bị lỡ (máy chủ sập, IP bị chặn) lấy lại được bằng `push.get_lost_push_message` rồi
+  `push.confirm_consumed_lost_push_message`.
 
 ## 8. Tra cứu nhanh
 
