@@ -8,8 +8,9 @@
 >
 > Tài liệu này viết cho **dev triển khai thật**, không phải bản demo: ngoài cách gọi API
 > còn có 4 mảnh bắt buộc phải có trước khi lên production (mục 5), các bẫy dữ liệu đã trả
-> giá thật (mục 6) và các bẫy vận hành app (mục 7). Mọi tham số đều đúng tên trong tài liệu
-> chính thức <https://open.shopee.com/documents> — SDK không đổi tên gì.
+> giá thật (mục 6) và các bẫy vận hành app (mục 7). Tên tham số trong ví dụ đã đối chiếu với
+> tài liệu chính thức <https://open.shopee.com/documents> tại ngày cập nhật. SDK chuyển nguyên
+> tên tham số sang Shopee và **không tự kiểm schema** — sai tên field thì chỉ Shopee báo lỗi.
 >
 > **Cập nhật 12/11/2026:** thư viện không đổi (vẫn 2.1.1). Bổ sung kiến thức chạy thật từ
 > 08/2026 đến 11/2026: tiền về sau điều chỉnh (bẫy 1 viết lại), kéo lại quyết toán, đơn đổi
@@ -97,6 +98,7 @@ resp = client.order.get_order_list(
 > `resp["response"]`.
 
 ```python
+import requests
 from pyshopee2 import ShopeeRequestError
 
 try:
@@ -104,22 +106,36 @@ try:
     orders = resp["response"]["order_list"]
 except ShopeeRequestError as e:
     # e.status_code · e.error (mã lỗi Shopee) · e.request_id · e.payload
-    # payload đã tự động che access_token/refresh_token/partner_key/sign → log an toàn
-    log.error("shopee_fail", code=e.error, req_id=e.request_id)
+    log.error("shopee_fail", code=e.error, req_id=e.request_id,
+              msg=e.payload.get("message"))   # thông điệp Shopee nằm ở payload
+except requests.RequestException as e:
+    # Lỗi mạng (timeout, DNS, mất kết nối) KHÔNG đi qua ShopeeRequestError —
+    # SDK để nguyên exception của requests bay ra. Xem quy tắc retry ở mục 5.3.
+    log.error("shopee_network_fail", err=repr(e))
 ```
 
 `e.request_id` là thứ Shopee support hỏi đầu tiên khi bạn báo lỗi — **luôn log nó**.
+
+> ⚠️ `e.payload` chỉ được che **nông**: SDK thay bốn khoá cấp ngoài cùng (`access_token`,
+> `refresh_token`, `partner_key`, `sign`). Khoá lồng bên trong và dữ liệu người mua thì không
+> che. Đừng log nguyên `e.payload` nếu chưa tự lọc; log `e.error`, `e.request_id`, `e.status_code`
+> và `e.payload.get("message")` là đủ.
 
 Các module có sẵn: `order · product · logistics · payment · discount · voucher · returns ·
 media · mediaspace · shop · merchant · chat · ads · ams · shopflashsale · bundledeal ·
 addondeal · firstmile · accounthealth · public · push · livestream · video · sbs · fbs ·
 globalproduct · toppicks · shopcategory · followprize`.
 
-Endpoint mới chưa có method riêng → gọi thẳng:
+Endpoint **đã có trong registry của SDK** (`pyshopee2/endpoint_registry.json`) nhưng chưa có
+method riêng → gọi thẳng:
 
 ```python
 resp = client.call(uri="/api/v2/order/get_order_list", method="GET", payload={...})
 ```
+
+> ⚠️ `client.call()` vẫn tra registry để biết cách ký. Endpoint Shopee mới ra mà registry chưa
+> có thì `call()` ném `EndpointNotFoundError` — phải thêm endpoint vào registry (đường dẫn, method,
+> loại khoá định danh) hoặc tự ký request theo tài liệu Shopee.
 
 ## 5. Bốn mảnh BẮT BUỘC trước khi lên production
 
@@ -136,10 +152,10 @@ def ensure_fresh_token(shop_id: int) -> Token:
     if token.expires_at - 120 > now():
         return token
 
-    before_updated = token.updated_at
+    refresh_da_thay = token.refresh_token
     with lock_for(shop_id):                     # khoá theo shop
         current = store.get(shop_id)            # ĐỌC LẠI sau khi giành được khoá
-        if current.updated_at > before_updated: # ← luồng khác vừa refresh xong rồi
+        if current.refresh_token != refresh_da_thay:  # ← luồng khác vừa refresh xong rồi
             return current                      #    dùng luôn, TUYỆT ĐỐI không refresh nữa
         access, expire_in, refresh = client.get_access_token(
             refresh_token=current.refresh_token, shop_id=shop_id
@@ -156,9 +172,11 @@ def ensure_fresh_token(shop_id: int) -> Token:
 
 Bốn chi tiết không được bỏ:
 
-- **Kiểm lại sau khi giành khoá** (`current.updated_at > before_updated`). Không có bước
+- **Kiểm lại sau khi giành khoá** (`current.refresh_token != refresh_da_thay`). Không có bước
   này thì 5 luồng cùng thấy token hết hạn sẽ xếp hàng refresh 5 lần liên tiếp — lần đầu
-  thành công, 4 lần sau dùng token đã chết → hỏng cả cụm.
+  thành công, 4 lần sau dùng token đã chết → hỏng cả cụm. So chính `refresh_token` (hoặc một
+  cột version tăng dần) chứ đừng so mốc thời gian: hai lần ghi trong cùng một giây, hoặc DB lưu
+  thời gian độ phân giải thấp, sẽ làm phép so thời gian bỏ lọt.
 - **Khoá phải phủ đúng phạm vi chạy.** Một tiến trình → `threading.Lock` là đủ. Nhiều
   worker/nhiều máy → phải khoá phân tán (Postgres `pg_advisory_lock`, Redis lock…).
 - **Ghi `refresh_token` mới đè cái cũ** trong cùng transaction với `access_token`.
@@ -167,9 +185,10 @@ Bốn chi tiết không được bỏ:
   song với app là app cầm token chết → mất quyền shop, phải authorize lại. Trong script, thay
   hàm refresh bằng một hàm ném lỗi; shop nào token hết hạn thì bỏ qua, để app tự refresh.
 
-> ⚠️ **Chỉ refresh khi mã lỗi đúng là lỗi token**, đừng refresh với mọi HTTP 403. Gọi sai
-> đường dẫn hay IP chưa khai cũng ra 403; nếu wrapper "gặp 403 là refresh" thì một script gọi
-> thử một endpoint không tồn tại cũng đủ đi vào đường refresh (đã xảy ra thật).
+> ⚠️ **Chỉ refresh khi lỗi đúng là lỗi access_token** (xem bảng 5.3), đừng refresh với mọi
+> HTTP 403 hay mọi `error_auth`. Gọi sai đường dẫn, IP chưa khai, app thiếu quyền đều ra 403;
+> nếu wrapper "gặp 403 là refresh" thì một script gọi thử một endpoint không tồn tại cũng đủ đi
+> vào đường refresh (đã xảy ra thật).
 
 ### 5.2. Phân trang — dừng theo cờ `more`, không dừng theo số lượng
 
@@ -215,21 +234,36 @@ for i in range(0, len(tat_ca), 50):
 
 ### 5.3. Phân loại lỗi → hành động (bảng này quyết định retry hay không)
 
-`ShopeeRequestError.error` chứa mã lỗi Shopee. Ánh xạ đã dùng production:
+`ShopeeRequestError.error` chứa mã lỗi Shopee; thông điệp của Shopee nằm ở
+`e.payload.get("message")` (khi HTTP ≥ 400, `str(e)` chỉ là `"HTTP 403 calling <path>"`, không
+có thông điệp). Lưu ý Shopee dùng
+**chung mã `error_auth`** cho nhiều nguyên nhân khác nhau (theo danh sách lỗi chung trong tài
+liệu từng API): `partner_id` sai, app bị xoá, app không có quyền gọi API này, **access_token sai
+hoặc hết hạn**. Nên phải đọc cả thông điệp, không chỉ mã:
 
 | Nhóm | Dấu hiệu | Xử lý |
 |---|---|---|
-| **Hết hạn / sai token** | `error_auth`, `error_token`, `error_auth_refresh`, `error_invalid_token`, `error_access_token`, `error_permission`, hoặc HTTP 401 | Refresh token rồi gọi lại **một lần**. Vẫn lỗi → dừng, báo người. Đừng lặp. |
+| **Access token hết hạn / sai** | `error_auth` **và** thông điệp nhắc tới `access_token` (ví dụ "Invalid access_token") | Refresh token rồi gọi lại **một lần**. Vẫn lỗi → dừng, báo người. Đừng lặp. |
+| **Thiếu quyền** | `error_permission`, `error_api_permission`, `error_ashop_api_permission`, hoặc `error_auth` với thông điệp không nhắc access_token ("No permission to current api", app bị xoá, partner_id sai) | **Không refresh, không retry.** Refresh không chữa được thiếu quyền mà còn tiêu `refresh_token`. Báo người kiểm quyền app / quyền shop. |
+| **Khoá partner hết hạn** | `error_partner_key_expired` | **Không retry.** Toàn hệ thống dừng tới khi xoay khoá trên Console — xem mục 7.1. |
+| **Sai chữ ký** | `error_sign` | **Không retry.** Kiểm partner_key và đồng hồ máy chủ (bẫy 19 ở mục 6). |
 | **Quá tần suất** | `error_too_many_request`, `error_rate_limit`, hoặc HTTP 429 | Chờ theo `retry_after` nếu có, không thì backoff luỹ thừa. **Được retry.** |
 | **Quá tần suất của quảng cáo** | `ads_rate_limit_shop_api` | **Không retry ngay** — xem bẫy 9 ở mục 6. |
 | **Shopee lỗi** | HTTP 5xx | Backoff rồi retry. **Được retry.** |
-| **Mạng** | timeout / connection reset | Backoff rồi retry — **nhưng xem cảnh báo bên dưới**. |
+| **Mạng** | `requests.Timeout`, `requests.ConnectionError` (SDK **không** gói các lỗi này vào `ShopeeRequestError`) | Backoff rồi retry — **nhưng xem cảnh báo bên dưới**. |
 | **IP chưa khai báo** | HTTP 403 + `source_ip_undeclared` | **Không retry, không refresh** — vô nghĩa. Báo người khai IP mới (mục 7.2). Thông điệp có dạng `Request Source IP (x.x.x.x) is undeclared` → parse lấy IP để báo cho nhanh. |
 | **Còn lại** | sai tham số, sai trạng thái đơn… | **Không retry.** Retry chỉ tốn quota và che lỗi thật. |
 
 Backoff nên có **jitter** (cộng ngẫu nhiên 0–25%) để nhiều worker không cùng thức dậy một
-lúc: `delay = min(cap, base * 2**(lần_thử-1)) + random(0, 0.25*delay)`, ví dụ
-`base=0.5s, cap=8s, tối đa 3 lần`.
+lúc, ví dụ `base=0.5s, cap=8s, tối đa 3 lần`:
+
+```python
+import random
+
+def thoi_gian_cho(lan_thu: int, base: float = 0.5, cap: float = 8.0) -> float:
+    goc = min(cap, base * 2 ** (lan_thu - 1))
+    return goc + random.uniform(0, 0.25 * goc)
+```
 
 > 🔴 **Cảnh báo về retry lỗi mạng, phần nguy hiểm nhất:** timeout **không** có nghĩa là
 > request chưa tới nơi. Với endpoint **ghi** (`cancel_order`, `update_*`, `unlist_item`,
@@ -305,6 +339,8 @@ Một số nhóm endpoint có hạn mức **riêng, thấp hơn nhiều và khô
    điều chỉnh của đơn đó. Đây là phép kiểm chéo tốt nhất mà không cần nguồn ngoài. Các loại giao
    dịch đáng biết: `ADJUSTMENT_FOR_RR_AFTER_ESCROW_VERIFIED` (trả hàng sau giải ngân),
    `RETURN_COMPENSATION_SERVICE_ADD`, `SELLER_COMPENSATE_ADD`, `FULFILMENT_COMPENSATE_ADD`.
+   (Các loại này thấy trong sổ ví thật của shop Việt Nam; danh sách trong tài liệu Shopee chưa
+   chắc liệt kê đủ, nên cột loại giao dịch phải nhận mọi giá trị, đừng ràng buộc theo danh sách cứng.)
    Lưu ý: khoản bù loại `ADJUSTMENT_CENTER_ADD` **không** có mã đơn, chỉ đối chiếu được ở cấp shop.
 
 ### Đơn hàng
@@ -487,6 +523,13 @@ endpoint đọc cho tới khi chắc chắn).
 
 ## Lịch sử thay đổi
 
+- **12/11/2026 (review chéo)** — Sửa các chỗ sai từ bản 10/08 và bản sáng 12/11 sau khi đối
+  chiếu với mã nguồn wheel và tài liệu JSON của Shopee: bảng phân loại lỗi 5.3 (không refresh
+  với `error_permission`; `error_auth` phải đọc thông điệp; thêm `error_partner_key_expired`,
+  `error_sign`); lỗi mạng không đi qua `ShopeeRequestError`; `e.payload` chỉ che nông;
+  `client.call()` chỉ gọi được endpoint có trong registry; mẫu refresh so `refresh_token` thay
+  vì mốc thời gian; công thức jitter thành mã Python chạy được; xác thực webhook tự viết (SDK
+  không có `verify_push`).
 - **12/11/2026** — Bổ sung kiến thức chạy thật 08–11/2026: tiền về sau điều chỉnh (bẫy 1),
   kéo lại quyết toán và đối chiếu ví (bẫy 4–5), đơn đổi trạng thái mà `update_time` đứng yên
   (bẫy 7), `main_item` và giá trong đơn (bẫy 8–9), che tên người nhận (bẫy 10), hai cờ trả hàng

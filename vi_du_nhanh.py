@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 
+import requests
 from pyshopee2 import Client, ShopeeRequestError
 
 # ==== ĐIỀN CỦA BẠN (app riêng — không dùng chung partner_id với hệ thống khác) ====
@@ -79,7 +80,7 @@ def main() -> None:
 
         # Tiền THỰC về ví — nguồn số đúng cho doanh thu (escrow âm là bình thường)
         sn = ma_don[0]
-        income = client.payment.get_escrow_detail(order_sn=sn)["response"].get("order_income", {})
+        income = client.payment.get_escrow_detail(order_sn=sn)["response"].get("order_income") or {}
         goc = income.get("escrow_amount")
         if goc is None:
             print(f"{sn}: Shopee chưa quyết toán (chưa có escrow)")
@@ -90,9 +91,13 @@ def main() -> None:
             print(f"{sn}: tiền thực về ví = {tien:,}đ")
 
     except ShopeeRequestError as e:
-        # payload đã tự che access_token/refresh_token/partner_key/sign → log an toàn.
         # LUÔN log request_id: Shopee support hỏi cái này đầu tiên.
-        print(f"Shopee lỗi: code={e.error} http={e.status_code} request_id={e.request_id}")
+        # Đừng in nguyên e.payload: SDK chỉ che 4 khoá cấp ngoài cùng, phần lồng bên trong thì không.
+        print(f"Shopee lỗi: code={e.error} http={e.status_code} request_id={e.request_id} · "
+              f"{e.payload.get('message')}")
+    except requests.RequestException as e:
+        # Lỗi mạng (timeout, DNS, mất kết nối) không được SDK gói vào ShopeeRequestError.
+        print(f"Lỗi mạng khi gọi Shopee: {e!r}")
 
 
 if __name__ == "__main__":
