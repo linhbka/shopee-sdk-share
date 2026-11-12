@@ -80,10 +80,13 @@ def main() -> None:
         # Tiền THỰC về ví — nguồn số đúng cho doanh thu (escrow âm là bình thường)
         sn = ma_don[0]
         income = client.payment.get_escrow_detail(order_sn=sn)["response"].get("order_income", {})
-        tien = income.get("escrow_amount")
-        if tien is None:
+        goc = income.get("escrow_amount")
+        if goc is None:
             print(f"{sn}: Shopee chưa quyết toán (chưa có escrow)")
         else:
+            # Trả hàng / bồi thường SAU giải ngân không sửa escrow_amount mà nằm ở
+            # total_adjustment_amount (số âm khi trừ tiền). Tiền về thật = cộng hai trường.
+            tien = goc + (income.get("total_adjustment_amount") or 0)
             print(f"{sn}: tiền thực về ví = {tien:,}đ")
 
     except ShopeeRequestError as e:

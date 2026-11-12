@@ -8,7 +8,7 @@ tài chính / quảng cáo.
 
 | File | Nội dung |
 |---|---|
-| [`HUONG-DAN-SU-DUNG.md`](HUONG-DAN-SU-DUNG.md) | **Tài liệu chính.** Cài đặt → authorize shop → gọi API → 4 mảnh bắt buộc trước khi lên production → 11 bẫy đã trả giá thật |
+| [`HUONG-DAN-SU-DUNG.md`](HUONG-DAN-SU-DUNG.md) | **Tài liệu chính.** Cài đặt → authorize shop → gọi API → 4 mảnh bắt buộc trước khi lên production → 21 bẫy dữ liệu đã trả giá thật → bẫy vận hành app (hạn khoá partner, IP, webhook) → tra cứu nhanh |
 | [`vi_du_nhanh.py`](vi_du_nhanh.py) | Script chạy được ngay: phân trang lấy đơn 24h, chi tiết theo lô, đọc tiền thực về ví |
 | `shopee_open_sdk-2.1.1-py3-none-any.whl` | Thư viện (license MIT) |
 
@@ -25,6 +25,25 @@ Shopee đã ngưng — không dùng.
 ```python
 from pyshopee2 import Client, ShopeeRequestError
 ```
+
+## Cập nhật 12/11/2026
+
+Thư viện không đổi (vẫn 2.1.1). Tài liệu bổ sung kiến thức chạy thật từ 08 đến 11/2026,
+quan trọng nhất:
+
+- **Tiền về = `escrow_amount + total_adjustment_amount`.** Trả hàng, bồi thường sau khi đã
+  giải ngân không sửa `escrow_amount` mà nằm ở khối điều chỉnh — chỉ đọc `escrow_amount` là
+  doanh thu cao hơn thật.
+- **Quyết toán phải kéo lại** khi đơn có trả hàng hoặc có giao dịch ví mới; kéo lại thì đừng
+  ghi đè số cũ bằng phản hồi rỗng.
+- **Đơn có thể đổi trạng thái mà `update_time` đứng yên** (trả hàng bị huỷ, đơn về
+  `COMPLETED`) — quét theo `update_time` sẽ bỏ sót.
+- **Live Partner Key hết hạn sau ~6 tháng**; xoay khoá có 24 giờ chuyển tiếp, không làm mất
+  token shop.
+- **IP whitelist đã dời sang "PII Necessity Declaration"**; khai IP xong cần ~4 phút mới thông đều.
+- **GMV Max chỉ chịu ~3 lệnh gọi sát nhau mỗi shop.**
+
+Chi tiết và cách làm: mục 6–8 của [HUONG-DAN-SU-DUNG.md](HUONG-DAN-SU-DUNG.md).
 
 ## Ba điều nên biết trước khi viết dòng đầu tiên
 
